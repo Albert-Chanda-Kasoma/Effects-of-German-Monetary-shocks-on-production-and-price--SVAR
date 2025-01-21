@@ -1,0 +1,620 @@
+#############################################################################
+
+ Chanda Albert Kasoma 
+
+###########################################################################
+
+# Load necessary libraries
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(tseries)
+library(vars)
+library(svars)
+
+
+setwd("C:/Users/Chanda Kasoma/Downloads")
+
+# Read the Excel file from the 4th sheet
+monthly_shocks <- read_excel("Dataset_EA-MPD.xlsx", sheet = 4)
+
+# Keep only 'date' and 'OIS_6M' columns
+monthly_shocks <- monthly_shocks[, c("date", "OIS_6M")]
+
+# Convert the 'date' column to Date format (assuming the date format is in dd/mm/yyyy)
+monthly_shocks$date <- as.Date(monthly_shocks$date, format = "%d/%m/%Y")
+
+# Extract Year and Month from the 'date' column
+monthly_shocks$year_month <- format(monthly_shocks$date, "%Y-%m")
+
+# Aggregate the OIS_6M surprises by summing within each month
+monthly_shocks <- monthly_shocks %>%
+  group_by(year_month) %>%
+  summarise(OIS_6M_monthly_shock = sum(OIS_6M, na.rm = TRUE)) %>%
+  ungroup()
+
+# Convert the 'year_month' column to MMYYYY format using substr
+monthly_shocks$date <- substr(monthly_shocks$year_month, 6, 7)  # Extract the month part (MM)
+monthly_shocks$date <- paste(monthly_shocks$date, substr(monthly_shocks$year_month, 1, 4), sep = "")  # Append the year part (YYYY)
+
+
+#  select the 'date' and 'OIS_6M_monthly_shock' columns
+monthly_shocks <- monthly_shocks[, c("date", "OIS_6M_monthly_shock")]
+
+
+# Print the resulting data
+print(monthly_shocks)
+
+################ Read rest of the data
+
+library(dplyr)
+bond_data <- read.csv("IRLTLT01DEM156N.csv")
+bond_data <- bond_data %>%
+  rename(date = observation_date, government_bond = IRLTLT01DEM156N) %>%
+  mutate(date = format(ymd(date), "%m%Y"))  
+
+# Read production index data
+prod_data <- read.csv("Production_Index.csv")
+prod_data <- prod_data %>%
+  rename(date = TIME_PERIOD, production_index = OBS_VALUE) %>%
+  mutate(date = format(ym(date), "%m%Y"))  
+
+# Merge bond data and production index data
+merged_data <- full_join(bond_data, prod_data, by = "date") 
+merged_data <- merged_data[, c("date", "government_bond", "production_index" )]
+
+
+# Read CPI data
+cpi_data <- read.csv("CPI.csv")
+cpi_data <- cpi_data %>%
+  rename(date = TIME_PERIOD, CPI = OBS_VALUE) %>%   
+  mutate(date = format(ym(date), "%m%Y"))         
+
+# Read unemployment rate data
+unemployment_data <- read.csv("unemployment_rate.csv")
+unemployment_data <- unemployment_data %>%
+  rename(date = TIME_PERIOD, unemployment_rate = OBS_VALUE) %>% 
+  mutate(date = format(ym(date), "%m%Y"))                      
+
+# Merge all macroeconomic data (bond, production, CPI, and unemployment)
+macro_data <- merged_data %>%
+  full_join(cpi_data, by = "date") %>%
+  full_join(unemployment_data, by = "date")
+
+library(dplyr)
+
+macro_data <- macro_data[, c("date", "government_bond", "production_index", "CPI", "unemployment_rate")]
+
+# Merge macroeconomic data with the monthly monetary policy shock data
+final_data <- full_join(macro_data, monthly_shocks, by = "date")
+
+# Write the final merged dataset to a CSV file
+write.csv(final_data, "final_combined_data1.csv", row.names = FALSE)
+
+final_combined_data1 <- read.csv("final_combined_data1.csv")
+
+
+
+########Cumulative Sum of Monthly Monetary Policy Shocks#########  
+
+# Compute the cumulative sum of the monetary policy shocks
+final_combined_data1$cumulated_monetary_policy_shocks <- cumsum(final_combined_data1$OIS_6M_monthly_shock)
+
+# Print the cumulative sum of the shocks to check
+print(final_combined_data1$cumulated_monetary_policy_shocks[1:10])
+
+
+##########Construct the VAR Model
+library(vars)
+library(tseries)
+
+# Taking log of the variables
+final_combined_data1$log_production_index <- log(final_combined_data1$production_index)
+final_combined_data1$log_CPI <- log(final_combined_data1$CPI)
+
+# Create a data frame with the relevant variables
+
+var_dataA <- final_combined_data1[, c("date", "log_production_index", "log_CPI", "cumulated_monetary_policy_shocks")]
+var_data_cleanA <- na.omit(var_dataA)
+
+
+# Convert the data to a time series object (xts or ts) for VAR modeling
+var_data_tsA <- ts(var_data_cleanA[, -1], start = c(1999, 1), frequency = 12)
+var_data_ts_cleanA <- na.omit(var_data_tsA)
+
+
+
+
+# Check for stationary of the time series
+adf_test_log_production <- adf.test(var_data_ts_cleanA[, "log_production_index"]) 
+adf_test_d_log_CPI <- adf.test(var_data_ts_cleanA[, "log_CPI"])
+adf_test_d_monetary_shocks <- adf.test(var_data_ts_cleanA[, "cumulated_monetary_policy_shocks"])
+
+print(adf_test_log_production) # Not stationary log_production,
+print(adf_test_d_log_CPI) # Not stationary log_production,
+print(adf_test_d_monetary_shocks) # Not stationary log_production,
+
+
+
+# Plotting the original series (before manipulation)
+par(mfrow = c(3, 1)) # Set up a 3-row plotting layout
+
+# Plot the original log production index
+plot(var_data_ts_cleanA[, "log_production_index"], type = "l", main = "Original Log Production Index", xlab = "Time", ylab = "Log Production Index", col = "blue")
+
+# Plot the original log CPI
+plot(var_data_ts_cleanA[, "log_CPI"], type = "l", main = "Original Log CPI", xlab = "Time", ylab = "Log CPI", col = "red")
+
+# Plot the original cumulative monetary policy shocks
+plot(var_data_ts_cleanA[, "cumulated_monetary_policy_shocks"], type = "l", main = "Original Cumulative Monetary Policy Shocks", xlab = "Time", ylab = "Cumulative Monetary Policy Shocks", col = "green")
+
+
+
+
+################################## Difference data#################
+
+# Create a new data frame from final_combined_data1
+final_combined_Difference <- final_combined_data1
+
+# Remove the first row (to align the differenced data)
+final_combined_Difference <- final_combined_Difference[-1, ]
+
+# Differencing the log variables
+final_combined_Difference$d_log_production_index <- diff(final_combined_data1$log_production_index, differences = 1)
+final_combined_Difference$d_log_CPI <- diff(final_combined_data1$log_CPI, differences = 1)
+final_combined_Difference$d_cumulated_monetary_policy_shocks <- diff(final_combined_data1$cumulated_monetary_policy_shocks, differences = 1)
+
+
+var_data_clean  <-  final_combined_Difference
+var_data_clean <- na.omit(var_data_clean)
+
+# Convert the data to a time series object (xts or ts) for VAR modeling
+var_data_ts <- ts(var_data_clean[, -1], start = c(1999, 1), frequency = 12)
+var_data_ts <- na.omit(var_data_ts)
+
+
+# Check for stationary of the time series
+adf_test_d_log_production <- adf.test(var_data_ts[, "d_log_production_index"]) 
+adf_test_d_log_CPI <- adf.test(var_data_ts[, "d_log_CPI"])
+adf_test_d_monetary_shocks <- adf.test(var_data_ts[, "d_cumulated_monetary_policy_shocks"])
+
+hist(final_combined_Difference$d_log_production_index)
+hist(final_combined_Difference$d_log_CPI)
+hist(final_combined_Difference$d_cumulated_monetary_policy_shocks)
+
+print(adf_test_d_log_production)  # stationary log_production,
+print(adf_test_d_log_CPI) #stationary log_CPI,
+print(adf_test_d_monetary_shocks) # not stationary monetary_shocks,
+
+
+# Plot the differenced series
+par(mfrow = c(3, 1)) # Set up a 3-row plotting layout again
+
+# Plot the differenced log production index
+plot(var_data_ts[, "d_log_production_index"], 
+     type = "l", 
+     main = "Differenced Log Production Index", 
+     xlab = "Time", 
+     ylab = "Differenced Log Production Index", 
+     col = "blue")
+
+# Plot the differenced log CPI
+plot(var_data_ts[, "d_log_CPI"], 
+     type = "l", 
+     main = "Differenced Log CPI", 
+     xlab = "Time", 
+     ylab = "Differenced Log CPI", 
+     col = "red")
+
+# Plot the differenced cumulative monetary policy shocks
+plot(var_data_ts[, "d_cumulated_monetary_policy_shocks"], 
+     type = "l", 
+     main = "Differenced Cumulative Monetary Policy Shocks", 
+     xlab = "Time", 
+     ylab = "Differenced Cumulative Monetary Policy Shocks", 
+     col = "green")
+
+
+
+
+
+
+
+#Determine the appropriate lag length for the VAR model using AIC and BIC
+lag_selection <- VARselect(var_data_ts, lag.max = 12, type = "both")
+print(lag_selection)
+
+
+
+# Fit the VAR model using the selected lag length
+#selected_lag <- lag_selection$selection["AIC(n)"]  # Choose AIC or BIC
+#selected_lag 
+  
+
+selected_lag<-12  # use this lag length when considering monthly data frequency 
+
+ 
+
+var_data_ts_diff <- var_data_ts[, c("d_log_production_index", "d_log_CPI", "d_cumulated_monetary_policy_shocks")]
+
+var_model <- VAR(var_data_ts_diff, p = selected_lag, type = "const")
+
+# Print the summary of the VAR model
+summary(var_model)
+
+cor(var_data_ts_diff)
+
+
+# Check for residual autocorrelation
+serial_test <- serial.test(var_model, lags.pt = 18, type = "PT.asymptotic")
+print(serial_test) # There is significant serial correlation in the residuals of the VAR model.
+
+
+
+
+
+##########################################################################################################################################
+
+library(vars)
+var_data_ts_diff<-var_data_ts
+
+library(vars)
+library(svars)
+
+
+# Scenario 1: Production → Prices → Monetary Policy
+selected_lag<-12
+
+# OR selected_lag<-1 RESULTS THE APPENDIX
+scenario1_var <- VAR(
+  var_data_ts_diff[, c("d_log_production_index", "d_log_CPI", "d_cumulated_monetary_policy_shocks")], 
+  p = selected_lag, 
+  type = "both"
+)
+
+# Apply recursive identification (Cholesky decomposition)
+scenario1_svar <- id.chol(scenario1_var)
+
+summary (scenario1_svar)
+
+# Compute impulse responses for Scenario 1
+irf_scenario1 <- irf(
+  scenario1_svar, 
+  impulse = "d_cumulated_monetary_policy_shocks", 
+  response = c("d_log_production_index", "d_log_CPI"), 
+  n.ahead = 12, 
+  boot = TRUE
+)
+
+# Plot impulse responses
+plot(irf_scenario1, main = "Scenario 1: Production → Prices → Monetary Policy")
+
+summary(scenario1_svar)
+
+
+
+# Scenario 2: Monetary Policy → Production → Prices
+scenario2_var <- VAR(
+  var_data_ts_diff[, c("d_cumulated_monetary_policy_shocks", "d_log_production_index", "d_log_CPI")], 
+  p = selected_lag, 
+  type = "both"
+)
+
+# Apply recursive identification (Cholesky decomposition)
+scenario2_svar <- id.chol(scenario2_var)
+
+summary(scenario2_svar)
+
+# Compute impulse responses for Scenario 2
+irf_scenario2 <- irf(
+  scenario2_svar, 
+  impulse = "d_cumulated_monetary_policy_shocks", 
+  response = c("d_log_production_index", "d_log_CPI"), 
+  n.ahead = 12, 
+  boot = TRUE
+)
+
+# Plot impulse responses
+plot(irf_scenario2, main = "Scenario 2: Monetary Policy → Production → Prices")
+
+
+
+
+#extract the reduced-form VAR coefficients or structural matrices SCENARIO 1
+# Step 1: Reduced-form VAR coefficient matrices
+cat("\n1. Reduced-Form VAR Coefficient Matrices:\n")
+coef_matrices <- coef(scenario1_var)
+print(coef_matrices)
+
+# Step 2: Reduced-Form Residual Covariance Matrix
+cat("\n2. Reduced-Form Residual Covariance Matrix:\n")
+reduced_cov <- cov(residuals(scenario1_var))
+print(reduced_cov)
+
+# Step 3: Structural B Matrix (Impact Matrix)
+cat("\n3. Structural B Matrix (Impact Matrix):\n")
+B_matrix <- scenario1_svar$B
+print(B_matrix)
+
+# Step 4: Structural Covariance Matrix (Sigma_U)
+cat("\n4. Structural Covariance Matrix (Sigma_U):\n")
+structural_cov <- scenario1_svar$Sigma_U
+print(structural_cov)
+
+# Step 5: SVAR Summary
+cat("\n5. SVAR Summary:\n")
+print(summary(scenario1_svar))
+
+
+
+
+#extract the reduced-form VAR coefficients or structural matrices SCENARIO 2
+# Step 1: Reduced-form VAR coefficient matrices
+cat("\n1. Reduced-Form VAR Coefficient Matrices:\n")
+coef_matrices <- coef(scenario2_var)
+print(coef_matrices)
+
+# Step 2: Reduced-Form Residual Covariance Matrix
+cat("\n2. Reduced-Form Residual Covariance Matrix:\n")
+reduced_cov <- cov(residuals(scenario2_var))
+print(reduced_cov)
+
+# Step 3: Structural B Matrix (Impact Matrix)
+cat("\n3. Structural B Matrix (Impact Matrix):\n")
+B_matrix <- scenario2_svar$B
+print(B_matrix)
+
+# Step 4: Structural Covariance Matrix (Sigma_U)
+cat("\n4. Structural Covariance Matrix (Sigma_U):\n")
+structural_cov <- scenario2_svar$Sigma_U
+print(structural_cov)
+
+# Step 5: SVAR Summary
+cat("\n5. SVAR Summary:\n")
+print(summary(scenario2_svar))
+
+
+
+
+# Appendix, impulse responses lag 1
+
+selected_lag <- 1
+
+scenario1_var <- VAR(
+  var_data_ts_diff[, c("d_log_production_index", "d_log_CPI", "d_cumulated_monetary_policy_shocks")], 
+  p = selected_lag, 
+  type = "both"
+)
+
+# Apply recursive identification (Cholesky decomposition)
+scenario1_svar <- id.chol(scenario1_var)
+
+
+# Compute impulse responses for Scenario 1
+irf_scenario1 <- irf(
+  scenario1_svar, 
+  impulse = "d_cumulated_monetary_policy_shocks", 
+  response = c("d_log_production_index", "d_log_CPI"), 
+  n.ahead = 12, 
+  boot = TRUE
+)
+
+# Plot impulse responses
+plot(irf_scenario1, main = "Scenario 1: Production → Prices → Monetary Policy")
+
+
+
+
+
+# Scenario 2: Monetary Policy → Production → Prices
+scenario2_var <- VAR(
+  var_data_ts_diff[, c("d_cumulated_monetary_policy_shocks", "d_log_production_index", "d_log_CPI")], 
+  p = selected_lag, 
+  type = "both"
+)
+
+# Apply recursive identification (Cholesky decomposition)
+scenario2_svar <- id.chol(scenario2_var)
+
+
+
+# Compute impulse responses for Scenario 2
+irf_scenario2 <- irf(
+  scenario2_svar, 
+  impulse = "d_cumulated_monetary_policy_shocks", 
+  response = c("d_log_production_index", "d_log_CPI"), 
+  n.ahead = 12, 
+  boot = TRUE
+)
+
+# Plot impulse responses
+plot(irf_scenario2, main = "Scenario 2: Monetary Policy → Production → Prices")
+
+##########################################################################################################################################
+
+library(vars)
+var_data_ts_diff<-var_data_ts
+
+library(vars)
+library(svars)
+
+
+# Scenario 1: Production → Prices → Monetary Policy
+selected_lag<-12
+
+# OR selected_lag<-1 RESULTS THE APPENDIX
+scenario1_var <- VAR(
+  var_data_ts_diff[, c("d_log_production_index", "d_log_CPI", "d_cumulated_monetary_policy_shocks")], 
+  p = selected_lag, 
+  type = "both"
+)
+
+# Apply recursive identification (Cholesky decomposition)
+scenario1_svar <- id.chol(scenario1_var)
+
+summary (scenario1_svar)
+
+# Compute impulse responses for Scenario 1
+irf_scenario1 <- irf(
+  scenario1_svar, 
+  impulse = "d_cumulated_monetary_policy_shocks", 
+  response = c("d_log_production_index", "d_log_CPI"), 
+  n.ahead = 12, 
+  boot = TRUE
+)
+
+# Plot impulse responses
+plot(irf_scenario1, main = "Scenario 1: Production → Prices → Monetary Policy")
+
+summary(scenario1_svar)
+
+
+
+# Scenario 2: Monetary Policy → Production → Prices
+scenario2_var <- VAR(
+  var_data_ts_diff[, c("d_cumulated_monetary_policy_shocks", "d_log_production_index", "d_log_CPI")], 
+  p = selected_lag, 
+  type = "both"
+)
+
+# Apply recursive identification (Cholesky decomposition)
+scenario2_svar <- id.chol(scenario2_var)
+
+summary(scenario2_svar)
+
+# Compute impulse responses for Scenario 2
+irf_scenario2 <- irf(
+  scenario2_svar, 
+  impulse = "d_cumulated_monetary_policy_shocks", 
+  response = c("d_log_production_index", "d_log_CPI"), 
+  n.ahead = 12, 
+  boot = TRUE
+)
+
+# Plot impulse responses
+plot(irf_scenario2, main = "Scenario 2: Monetary Policy → Production → Prices")
+
+
+
+
+#extract the reduced-form VAR coefficients or structural matrices SCENARIO 1
+# Step 1: Reduced-form VAR coefficient matrices
+cat("\n1. Reduced-Form VAR Coefficient Matrices:\n")
+coef_matrices <- coef(scenario1_var)
+print(coef_matrices)
+
+# Step 2: Reduced-Form Residual Covariance Matrix
+cat("\n2. Reduced-Form Residual Covariance Matrix:\n")
+reduced_cov <- cov(residuals(scenario1_var))
+print(reduced_cov)
+
+# Step 3: Structural B Matrix (Impact Matrix)
+cat("\n3. Structural B Matrix (Impact Matrix):\n")
+B_matrix <- scenario1_svar$B
+print(B_matrix)
+
+# Step 4: Structural Covariance Matrix (Sigma_U)
+cat("\n4. Structural Covariance Matrix (Sigma_U):\n")
+structural_cov <- scenario1_svar$Sigma_U
+print(structural_cov)
+
+# Step 5: SVAR Summary
+cat("\n5. SVAR Summary:\n")
+print(summary(scenario1_svar))
+
+
+
+
+#extract the reduced-form VAR coefficients or structural matrices SCENARIO 2
+# Step 1: Reduced-form VAR coefficient matrices
+cat("\n1. Reduced-Form VAR Coefficient Matrices:\n")
+coef_matrices <- coef(scenario2_var)
+print(coef_matrices)
+
+# Step 2: Reduced-Form Residual Covariance Matrix
+cat("\n2. Reduced-Form Residual Covariance Matrix:\n")
+reduced_cov <- cov(residuals(scenario2_var))
+print(reduced_cov)
+
+# Step 3: Structural B Matrix (Impact Matrix)
+cat("\n3. Structural B Matrix (Impact Matrix):\n")
+B_matrix <- scenario2_svar$B
+print(B_matrix)
+
+# Step 4: Structural Covariance Matrix (Sigma_U)
+cat("\n4. Structural Covariance Matrix (Sigma_U):\n")
+structural_cov <- scenario2_svar$Sigma_U
+print(structural_cov)
+
+# Step 5: SVAR Summary
+cat("\n5. SVAR Summary:\n")
+print(summary(scenario2_svar))
+
+
+
+
+# Appendix, impulse responses lag 1
+
+selected_lag <- 1
+
+scenario1_var <- VAR(
+  var_data_ts_diff[, c("d_log_production_index", "d_log_CPI", "d_cumulated_monetary_policy_shocks")], 
+  p = selected_lag, 
+  type = "both"
+)
+
+# Apply recursive identification (Cholesky decomposition)
+scenario1_svar <- id.chol(scenario1_var)
+
+
+# Compute impulse responses for Scenario 1
+irf_scenario1 <- irf(
+  scenario1_svar, 
+  impulse = "d_cumulated_monetary_policy_shocks", 
+  response = c("d_log_production_index", "d_log_CPI"), 
+  n.ahead = 12, 
+  boot = TRUE
+)
+
+# Plot impulse responses
+plot(irf_scenario1, main = "Scenario 1: Production → Prices → Monetary Policy")
+
+
+
+
+
+# Scenario 2: Monetary Policy → Production → Prices
+scenario2_var <- VAR(
+  var_data_ts_diff[, c("d_cumulated_monetary_policy_shocks", "d_log_production_index", "d_log_CPI")], 
+  p = selected_lag, 
+  type = "both"
+)
+
+summary(scenario2_svar$A)
+
+
+
+# Apply recursive identification (Cholesky decomposition)
+scenario2_svar <- id.chol(scenario2_var)
+
+
+
+# Compute impulse responses for Scenario 2
+irf_scenario2 <- irf(
+  scenario2_svar, 
+  impulse = "d_cumulated_monetary_policy_shocks", 
+  response = c("d_log_production_index", "d_log_CPI"), 
+  n.ahead = 12, 
+  boot = TRUE
+)
+
+# Plot impulse responses
+plot(irf_scenario2, main = "Scenario 2: Monetary Policy → Production → Prices")
+
+
+
+
+scenario2_svar$A
+scenario2_svar$B
+
+A_matrix_scenario1 <- scenario1_svar$A
